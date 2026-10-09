@@ -18,6 +18,9 @@ disagreements with documentation instead of assuming either is correct.
 
 ## Development principles
 
+- The project's conda environment is `rpent`. Before starting work, confirm
+  that `CONDA_DEFAULT_ENV` is `rpent`; run `conda activate rpent` if needed
+  and verify it again before proceeding.
 - Confirm the working branch and relevant upstream state before editing. Read
   the closest current implementation and both sides of changed interfaces.
   Preserve unrelated working-tree changes.
