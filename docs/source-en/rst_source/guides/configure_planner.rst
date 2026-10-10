@@ -33,9 +33,9 @@ loop is orchestrated, and which model SDK is used.
        SDK drives the loop.
      - Run the tool-calling loop through the Claude Agent SDK.
    * - ``codex``
-     - The OpenAI **Codex Python SDK**. RPent starts an in-process
+     - The OpenAI **Codex Python SDK** (default) or official CLI. RPent starts an in-process
        Streamable HTTP MCP server that connects the toolkit to Codex.
-     - Run tasks through the Codex SDK, using existing authentication or a configured API.
+     - Run tasks using existing Codex authentication or a configured API.
    * - ``flash``
      - **Flash Mode**, for evaluation only. Replays a plan from memory,
        recorded from an earlier
@@ -142,7 +142,8 @@ auto-compaction settings.
 The ``codex`` Planner
 ----------------------
 
-``--planner codex`` uses the OpenAI Codex Python SDK. For each run,
+``--planner codex`` uses the OpenAI Codex Python SDK by default
+(``--codex-driver sdk``). For each run,
 RPent starts a local Streamable HTTP MCP server on a background thread
 in the current process, and Codex calls the same toolkit through that
 server. You do not need to start ``scripts/codex_proxy/`` first.
@@ -164,13 +165,52 @@ Notes:
   backend. This does not change ``--reasoning-effort``. When unset, RPent
   does not override the service tier.
 - ``--model`` overrides ``CODEX_MODEL``. If neither is set, RPent uses
-  the model configured as the Codex SDK default.
+  the model configured in Codex.
 - ``--planner-timeout-s`` limits the Codex run. Its default is
   ``CODEX_TIMEOUT_S``, then ``CELL_TIMEOUT_S``, then ``1200`` seconds.
-- By default, the Codex SDK reuses existing Codex authentication. For
+- Both Codex drivers reuse existing Codex authentication. For
   a custom Responses-compatible endpoint, set ``CODEX_BASE_URL`` and
   ``CODEX_API_KEY``. This backend does not read ``OPENAI_BASE_URL`` or
   ``OPENAI_API_KEY``.
+
+Non-Interactive CLI Driver
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Use ``--codex-driver cli`` to run a single evaluation task through
+``codex exec --json``. Install the official Codex CLI and log in first;
+``CODEX_BIN`` selects the executable, otherwise RPent uses ``codex`` on
+``PATH``. The driver uses the same model and endpoint environment variables
+listed above. Check the selected driver before starting a robot runtime:
+
+.. code-block:: bash
+
+   rpent-check-llm --planner codex --codex-driver cli \
+     --model gpt-6.1-sol --timeout-s 90 --json
+
+   rpent --robot libero --planner codex --codex-driver cli \
+     --model gpt-6.1-sol --reasoning-effort low \
+     --planner-timeout-s 1200 \
+     --suite libero_goal_task --task 1 --seed 0
+
+The RPent MCP server is required: connection failure ends the CLI run.
+The CLI shell uses a read-only sandbox; RPent tools own robot operations and
+artifact writes. Timeout or cancellation terminates the owned CLI process
+group, waits for active tool execution to stop, and closes the MCP server.
+Transient ``error`` events are retained in the log; the final CLI outcome
+determines whether the run failed.
+
+This driver supports non-interactive single-task evaluation. ``--dashboard``,
+``--interactive``, and ``--explore`` are rejected. ``--max-turns`` is not
+enforced because CLI events do not expose individual model-response counts;
+use ``--planner-timeout-s`` to bound execution. Results report
+``turns_used=null`` and ``cli_turns_completed`` separately.
+
+The run saves a readable transcript, raw ``.stream.jsonl`` events, the final
+assistant message in ``.last``, and CLI diagnostics in ``.stderr`` alongside
+``codex_<task-tag>.txt``. Tool calls and token usage are included in the planner
+result. Only a successful RPent ``finish`` tool return containing ``_finish``
+sets the finish result; the environment's native success signal determines
+task success.
 
 Local Models with Codex
 ~~~~~~~~~~~~~~~~~~~~~~~
@@ -233,14 +273,16 @@ robot runtime:
    rpent-check-llm --planner api --model anthropic:claude-opus-4-8
    rpent-check-llm --planner claude_code
    rpent-check-llm --planner codex --json
+   rpent-check-llm --planner codex --codex-driver cli --json
 
 It exits ``0`` on success and ``1`` on any failure, and classifies the
 failure as one of ``missing_config``, ``unsupported_provider``,
-``missing_api_key``, ``auth_failed``, ``network_error``,
+``missing_api_key``, ``invalid_model``, ``auth_failed``, ``network_error``,
 ``provider_error``, or ``sdk_error``. Use ``--json`` for scripting and
-CI. ``--base-url`` overrides the backend's endpoint, and ``--timeout-s``
-overrides the diagnostic timeout (30 s for ``api``, 90 s for the two SDK
-backends; the ``1200`` s run default is never reused).
+CI. ``--base-url`` overrides the endpoint for ``api``; Claude Code and Codex
+read their endpoint environment variables. ``--timeout-s`` overrides the
+diagnostic timeout (30 s for ``api``, 90 s for Claude Code and either Codex
+driver; the ``1200`` s run default is never reused).
 
 Before using the Dashboard, run the same check in a terminal with the
 planner and model settings you intend to use for the task. The Dashboard
@@ -272,9 +314,11 @@ The counting rule depends on the backend:
   RPent reports the request count as ``turns_used``. Reaching the limit is a
   normal stop, not a planner error or a claim of task success. Exploration can
   continue with the next session and merge memory when otherwise eligible.
-- **Codex:** Each model response counts once, including responses with
+- **Codex SDK:** Each model response counts once, including responses with
   only reasoning or tool calls. Several tools requested in the same response
   still count as one turn. RPent enforces this limit.
+- **Codex CLI:** Individual model-response counts and ``--max-turns``
+  enforcement are unavailable; use the wall-clock timeout described above.
 - **Claude Code:** A turn means the model requests tools, those tools run,
   and their results return to the model. A final answer without tool calls
   does not use this budget. RPent passes the limit to Claude Code, which
@@ -282,7 +326,7 @@ The counting rule depends on the backend:
 
 For example, with no retries, the model requests two file reads in one
 response, then summarizes their results in another. API sends two requests,
-Codex counts two responses, and Claude uses one tool-use turn. All three
+Codex SDK counts two responses, and Claude uses one tool-use turn. All three
 report ``turns_used=2``; Claude's reported response count differs from its
 tool-use budget.
 

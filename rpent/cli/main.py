@@ -136,6 +136,13 @@ def _build_argparser() -> argparse.ArgumentParser:
         "each waypoint's anchor.",
     )
     ap.add_argument(
+        "--codex-driver",
+        choices=["sdk", "cli"],
+        default="sdk",
+        help="Codex driver (default: sdk). cli uses codex exec for "
+        "non-interactive tasks; --max-turns is not enforced by cli.",
+    )
+    ap.add_argument(
         "--model",
         default=None,
         help="Model id. For the 'api' planner, prefix the provider "
@@ -150,7 +157,12 @@ def _build_argparser() -> argparse.ArgumentParser:
             "API base URL, for the 'api' planner only. claude_code and codex take their endpoint from ANTHROPIC_BASE_URL / CODEX_BASE_URL instead; passing this flag with either is an error rather than a silent no-op."
         ),
     )
-    ap.add_argument("--max-turns", type=int, default=100)
+    ap.add_argument(
+        "--max-turns",
+        type=int,
+        default=100,
+        help="Planner model-response limit; not enforced by the Codex CLI driver.",
+    )
     ap.add_argument("--max-tokens", type=int, default=8192)
     ap.add_argument(
         "--reasoning-effort",
@@ -300,6 +312,7 @@ def _start_continuation_session(
         robot_name=args.robot_name,
         base_url=args.base_url,
         model=args.model,
+        codex_driver=args.codex_driver,
         max_tokens=args.max_tokens,
         planner_timeout_s=args.planner_timeout_s,
         reasoning_effort=args.reasoning_effort,
@@ -356,6 +369,14 @@ def main() -> int:
     )
     args = parser.parse_args()
     args.robot_name = early.robot_name
+    if args.codex_driver == "cli":
+        if args.planner != "codex":
+            parser.error("--codex-driver cli requires --planner codex")
+        if args.dashboard or args.interactive or args.explore:
+            parser.error(
+                "--codex-driver cli supports non-interactive single-task evaluation "
+                "only; --dashboard, --interactive, and --explore are not supported"
+            )
     human_interactive_exploration = (
         args.explore and robot_spec.supports_human_interactive_exploration
     )
@@ -453,6 +474,7 @@ def main() -> int:
         memory_dir=prompt_vars.get("memory_dir"),
         base_url=args.base_url,
         model=args.model,
+        codex_driver=args.codex_driver,
         max_tokens=args.max_tokens,
         planner_timeout_s=args.planner_timeout_s,
         reasoning_effort=args.reasoning_effort,

@@ -188,8 +188,15 @@ def build_planner(
     dashboard_events: DashboardEventSink,
     no_images: bool = False,
     interactive: bool = False,
+    codex_driver: str = "sdk",
 ) -> Planner:
     """Build a planner for the given backend, resolving credentials from env vars."""
+    if codex_driver not in {"sdk", "cli"}:
+        raise ValueError(f"unknown codex_driver: {codex_driver}")
+    if codex_driver == "cli" and planner_type != "codex":
+        raise ValueError("codex_driver='cli' requires the codex planner")
+    if codex_driver == "cli" and (interactive or dashboard_events.enabled):
+        raise ValueError("the Codex CLI driver supports non-interactive tasks only")
     # Imports are deferred to avoid a circular import: api_loop / claude_code /
     # codex all import from this module (PlannerResult).
 
@@ -230,7 +237,10 @@ def build_planner(
             reasoning_effort=reasoning_effort,
         )
     if planner_type == "codex":
-        from rpent.planner.codex import CodexPlanner
+        if codex_driver == "cli":
+            from rpent.planner.codex_cli import CodexCliPlanner as CodexBackend
+        else:
+            from rpent.planner.codex import CodexPlanner as CodexBackend
 
         cx_timeout_s = planner_timeout_s
         if cx_timeout_s is None:
@@ -240,7 +250,7 @@ def build_planner(
                     os.environ.get("CELL_TIMEOUT_S", "1200"),
                 )
             )
-        return CodexPlanner(
+        return CodexBackend(
             output_dir=output_dir,
             repo_root=get_repo_root(),
             model=model,

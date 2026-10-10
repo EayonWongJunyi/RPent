@@ -28,12 +28,15 @@ These options control the planner, memory, output directory, and Dashboard.
    * - ``--planner``
      - ``api``
      - ``api``, ``claude_code``, ``codex``, or ``flash``.
+   * - ``--codex-driver``
+     - ``sdk``
+     - Codex driver; ``cli`` supports non-interactive single-task evaluation. See :doc:`configure_planner`.
    * - ``--model``
      - ``—``
-     - ``api`` requires a provider prefix; SDK planners use their backend defaults.
+     - ``api`` requires a provider prefix; Claude Code and Codex use their backend defaults.
    * - ``--max-turns``
      - ``100``
-     - Planner turn limit. For ``api``, counts model requests across the conversation, including retries and follow-ups.
+     - Planner turn limit; not enforced by the Codex CLI driver. For ``api``, counts model requests across the conversation, including retries and follow-ups.
    * - ``--max-tokens``
      - ``8192``
      - ``api`` only: token limit per model response.
@@ -50,7 +53,7 @@ These options control the planner, memory, output directory, and Dashboard.
      - Defaults to ``CODEX_TIMEOUT_S`` (Codex only), then ``CELL_TIMEOUT_S``, then 1200 seconds; terminal interactive API/Claude sessions are exempt.
    * - ``--base-url``
      - ``—``
-     - ``api`` only: override the model endpoint. SDK planners use their own environment variables.
+     - ``api`` only: override the model endpoint. Claude Code and Codex use their own environment variables.
    * - ``--no-images``
      - ``false``
      - ``api`` only: omit images from model requests.

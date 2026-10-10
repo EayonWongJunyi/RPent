@@ -80,6 +80,7 @@ def test_cli_forwards_every_flag_to_the_shared_check(
     assert exit_code == 0
     request = captured["request"]
     assert request.planner == "api"
+    assert request.codex_driver == "sdk"
     assert request.model == "anthropic:m"
     assert request.base_url == "https://gateway.example"
     assert request.timeout_s == 7
@@ -275,3 +276,20 @@ def test_multiline_detail_stays_aligned_in_the_report(
 
     assert continuation, "the wrapped detail line is missing"
     assert continuation[0].startswith("    "), "continuation is not indented"
+
+
+def test_cli_selects_codex_driver(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured = _stub_check(
+        monkeypatch,
+        LlmCheckResult(ok=True, status=STATUS_OK, planner="codex", reply="ok"),
+    )
+    assert _run(monkeypatch, "--planner", "codex", "--codex-driver", "cli") == 0
+    assert captured["request"].codex_driver == "cli"
+
+
+def test_cli_rejects_codex_driver_for_other_planners(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(SystemExit) as exc:
+        _run(monkeypatch, "--planner", "api", "--codex-driver", "cli")
+    assert exc.value.code == 2

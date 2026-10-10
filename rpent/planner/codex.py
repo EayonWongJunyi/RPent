@@ -54,32 +54,19 @@ from rpent.planner.base import (
     PlannerResult,
     strip_mcp_prefix,
 )
+from rpent.planner.utils.codex_config import (
+    PROVIDER_ENV_KEY,
+    PROVIDER_ID,  # noqa: F401 - retained for existing callers
+    _codex_environment,
+    _codex_mcp_config_overrides,  # noqa: F401 - retained for existing callers
+    codex_config_overrides,
+)
 from rpent.planner.utils.http_mcp_server import HttpMcpServer
 from rpent.tools.toolkit import Toolkit
 from rpent.utils.config import get_repo_root
 from rpent.utils.logging import get_logger
 
 logger = get_logger("codex")
-
-PROVIDER_ID = "rpent_proxy"
-PROVIDER_ENV_KEY = "RPENT_CODEX_PROVIDER_KEY"
-_LOOPBACK_NO_PROXY_HOSTS = ("127.0.0.1", "localhost")
-
-
-def _codex_environment() -> dict[str, str]:
-    """Build the Codex child environment with direct access to its local MCP."""
-    env = {**os.environ}
-    entries: list[str] = []
-    for key in ("NO_PROXY", "no_proxy"):
-        entries.extend(item.strip() for item in env.get(key, "").split(","))
-    entries = list(
-        dict.fromkeys(item for item in (*entries, *_LOOPBACK_NO_PROXY_HOSTS) if item)
-    )
-    bypass = ",".join(entries)
-    env["NO_PROXY"] = bypass
-    env["no_proxy"] = bypass
-    return env
-
 
 # ---------------------------------------------------------------------------
 # Public backend
@@ -864,16 +851,9 @@ def build_codex_config(
     env = _codex_environment()
     if api_key:
         env[PROVIDER_ENV_KEY] = api_key
-    config_overrides = _codex_mcp_config_overrides(mcp_url=mcp_url, base_url=base_url)
-    # Project development instructions and skills are excluded from planner context.
-    config_overrides.append("project_doc_max_bytes=0")
-    disabled_skills = [
-        f"{{ path = {json.dumps(str(path.resolve()), ensure_ascii=False)}, enabled = false }}"
-        for path in sorted((Path(cwd) / ".agents" / "skills").glob("*/SKILL.md"))
-        if path.is_file()
-    ]
-    if disabled_skills:
-        config_overrides.append(f"skills.config=[{', '.join(disabled_skills)}]")
+    config_overrides = codex_config_overrides(
+        mcp_url=mcp_url, base_url=base_url, cwd=cwd
+    )
     kwargs: dict[str, Any] = {
         "config_overrides": tuple(config_overrides),
         "cwd": cwd,
@@ -986,36 +966,6 @@ def build_probe_config(base_url: str | None = None) -> Any:
         api_key=os.environ.get("CODEX_API_KEY", None),
         cwd=str(get_repo_root()),
     )
-
-
-def _codex_mcp_config_overrides(
-    *,
-    mcp_url: str | None,
-    base_url: str | None,
-) -> list[str]:
-    config: list[tuple[str, Any]] = []
-    if mcp_url:
-        config.append(("mcp_servers.rpent.url", mcp_url))
-    if base_url:
-        normalized = base_url.rstrip("/")
-        if not normalized.endswith("/v1"):
-            normalized = normalized + "/v1"
-        config.extend(
-            [
-                ("model_provider", PROVIDER_ID),
-                (f"model_providers.{PROVIDER_ID}.name", PROVIDER_ID),
-                (f"model_providers.{PROVIDER_ID}.base_url", normalized),
-                (f"model_providers.{PROVIDER_ID}.wire_api", "responses"),
-                (f"model_providers.{PROVIDER_ID}.env_key", PROVIDER_ENV_KEY),
-            ]
-        )
-    model_context_window = os.environ.get("CODEX_MODEL_CONTEXT_WINDOW", None)
-    if model_context_window is not None:
-        config.append(("model_context_window", int(model_context_window)))
-    auto_compact_token_limit = os.environ.get("CODEX_AUTO_COMPACT_TOKEN_LIMIT", None)
-    if auto_compact_token_limit is not None:
-        config.append(("model_auto_compact_token_limit", int(auto_compact_token_limit)))
-    return [f"{key}={json.dumps(value)}" for key, value in config]
 
 
 # ---------------------------------------------------------------------------

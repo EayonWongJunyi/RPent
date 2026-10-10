@@ -28,12 +28,15 @@
    * - ``--planner``
      - ``api``
      - ``api``、``claude_code``、``codex`` 或 ``flash``。
+   * - ``--codex-driver``
+     - ``sdk``
+     - Codex 驱动；``cli`` 支持非交互单任务评测。详见 :doc:`configure_planner`。
    * - ``--model``
      - ``—``
-     - ``api`` 要求服务提供方前缀；SDK 规划器使用各自默认值。
+     - ``api`` 要求服务提供方前缀；Claude Code 和 Codex 使用各自默认值。
    * - ``--max-turns``
      - ``100``
-     - 规划器轮数上限；``api`` 按整段对话的模型请求次数计算，包括重试和后续输入。
+     - 规划器轮数上限；Codex CLI 驱动不执行此限制。``api`` 按整段对话的模型请求次数计算，包括重试和后续输入。
    * - ``--max-tokens``
      - ``8192``
      - 仅 ``api``：每次模型回复的 Token 上限。

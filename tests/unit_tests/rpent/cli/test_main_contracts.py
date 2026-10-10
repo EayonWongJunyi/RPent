@@ -138,6 +138,7 @@ def test_shared_cli_defaults_reach_robot_config_parser(
     assert robot_name == "libero"
     assert args.robot_name == "libero"
     assert args.planner == "api"
+    assert args.codex_driver == "sdk"
     assert args.model is None
     assert args.max_turns == 100
     assert args.max_tokens == 8192
@@ -781,3 +782,24 @@ def test_full_cli_calls_robot_result_finalizer_without_robot_special_case(
     }
     assert robot_toolkit.closed is True
     assert daemon.stopped is True
+
+
+def test_codex_cli_driver_reaches_task_args(monkeypatch: pytest.MonkeyPatch) -> None:
+    _, args = _capture_validated_args(
+        monkeypatch,
+        ["--robot", "libero", "--planner", "codex", "--codex-driver", "cli"],
+    )
+    assert args.codex_driver == "cli"
+
+
+@pytest.mark.parametrize("flag", ["--interactive", "--dashboard", "--explore"])
+def test_codex_cli_driver_rejects_unsupported_modes_early(
+    monkeypatch: pytest.MonkeyPatch,
+    flag: str,
+) -> None:
+    with pytest.raises(SystemExit) as exc:
+        _capture_validated_args(
+            monkeypatch,
+            ["--robot", "libero", "--planner", "codex", "--codex-driver", "cli", flag],
+        )
+    assert exc.value.code == 2

@@ -80,10 +80,48 @@ def _strip_mcp_prefix(name: str) -> str:
     return name
 
 
-def build_mcp_server(toolkit: Toolkit) -> Server:
+class _ToolExecutionGate:
+    """Prevent new execution during shutdown and drain submitted executor work."""
+
+    def __init__(self, toolkit: Toolkit) -> None:
+        self._toolkit = toolkit
+        self._condition = threading.Condition()
+        self._stopping = False
+        self._active = False
+
+    def execute(self, name: str, arguments: dict[str, Any]) -> ToolResult:
+        with self._condition:
+            if self._stopping:
+                return ToolResult(data={"error": "MCP server is stopping"})
+            self._active = True
+        try:
+            return self._toolkit.execute_tool(name, arguments)
+        finally:
+            with self._condition:
+                self._active = False
+                self._condition.notify_all()
+
+    def cancel_active_and_wait(self) -> None:
+        with self._condition:
+            self._stopping = True
+        while True:
+            with self._condition:
+                if not self._active:
+                    return
+            # Repeat if cancellation raced with Toolkit creating its operation.
+            self._toolkit.cancel_active_and_wait()
+            with self._condition:
+                if self._active:
+                    self._condition.wait(timeout=0.05)
+
+
+def build_mcp_server(
+    toolkit: Toolkit, *, execution_gate: _ToolExecutionGate | None = None
+) -> Server:
     """Expose native declarations through MCP, with Toolkit owning validation."""
     mcp_app: Server = Server(SERVER_NAME, version="0.1.0")
     tool_execution_lock = asyncio.Lock()
+    gate = execution_gate or _ToolExecutionGate(toolkit)
 
     @mcp_app.list_tools()
     async def _list_tools() -> list[types.Tool]:
@@ -102,18 +140,25 @@ def build_mcp_server(toolkit: Toolkit) -> Server:
     async def _call_tool(name: str, arguments: dict[str, Any]) -> types.CallToolResult:
         lookup = _strip_mcp_prefix(name)
         async with tool_execution_lock:
-            tr = await asyncio.get_running_loop().run_in_executor(
-                None, toolkit.execute_tool, lookup, arguments or {}
+            work = asyncio.get_running_loop().run_in_executor(
+                None, gate.execute, lookup, arguments or {}
             )
+            try:
+                tr = await asyncio.shield(work)
+            except asyncio.CancelledError:
+                # Cancelling the HTTP request cannot stop its executor thread.
+                # Keep the serialization lock until that tool actually returns.
+                await asyncio.shield(work)
+                raise
         return types.CallToolResult(**mcp_result(tr))
 
     return mcp_app
 
 
-def _build_asgi_app(toolkit: Toolkit) -> Any:
+def _build_asgi_app(toolkit: Toolkit, execution_gate: _ToolExecutionGate) -> Any:
     """Build a raw ASGI3 app wrapping an MCP ``Server`` + streamable HTTP."""
     session_manager = StreamableHTTPSessionManager(
-        app=build_mcp_server(toolkit),
+        app=build_mcp_server(toolkit, execution_gate=execution_gate),
         stateless=True,
         json_response=True,
     )
@@ -193,6 +238,7 @@ class HttpMcpServer:
         path: str = "/mcp",
     ) -> None:
         self._toolkit = toolkit
+        self._execution_gate = _ToolExecutionGate(toolkit)
         self._host = host
         self._port = port or _pick_free_port(host)
         self._path = path if path.startswith("/") else f"/{path}"
@@ -208,7 +254,8 @@ class HttpMcpServer:
         if self._thread is not None:
             return self.url
 
-        app = _build_asgi_app(self._toolkit)
+        self._execution_gate = _ToolExecutionGate(self._toolkit)
+        app = _build_asgi_app(self._toolkit, self._execution_gate)
 
         config = uvicorn.Config(
             app,
@@ -229,6 +276,10 @@ class HttpMcpServer:
         logger.info("HttpMcpServer ready at %s", self.url)
         return self.url
 
+    def cancel_active_and_wait(self) -> None:
+        """Reject queued/new calls and wait for active Toolkit execution to stop."""
+        self._execution_gate.cancel_active_and_wait()
+
     def stop(self, *, timeout_s: float = 5.0) -> None:
         if self._server is not None:
             self._server.should_exit = True
@@ -240,5 +291,6 @@ class HttpMcpServer:
                     "leaving references intact",
                     timeout_s,
                 )
+                return
         self._server = None
         self._thread = None

@@ -24,9 +24,9 @@ RPent 通过一个 CLI 参数选择 Agentic Planner 的后端：
        <https://code.claude.com/docs/en/agent-sdk/overview>`_。把 RPent 的 toolkit 暴露为进程内 MCP 服务，由 Claude Agent SDK 驱动循环。
      - 通过 Claude Agent SDK 运行工具调用循环。
    * - ``codex``
-     - OpenAI **Codex Python SDK**。RPent 在进程内启动
+     - OpenAI **Codex Python SDK** （默认）或官方 CLI。RPent 在进程内启动
        Streamable HTTP MCP 服务，把 toolkit 接入 Codex。
-     - 通过 Codex SDK 运行任务，复用已有的 Codex 认证或配置独立 API。
+     - 复用已有的 Codex 认证或配置独立 API 运行任务。
    * - ``flash``
      - **Flash Mode**，仅用于评测。重放 memory 中保存的成功执行计划，并对每个路点
        的锚点重新定位，使方案能跟随移动过的物体。参见
@@ -107,7 +107,7 @@ Claude Code 可以连接兼容 Anthropic Messages API 的本地模型服务。�
 ``codex`` planner
 ------------------
 
-``--planner codex`` 使用 OpenAI Codex Python SDK。每次运行时，RPent 会在当前进程的后台线程中启动本地 Streamable HTTP MCP 服务，Codex 通过该服务调用同一个 toolkit；无需预先启动 ``scripts/codex_proxy/``。
+``--planner codex`` 默认使用 OpenAI Codex Python SDK（``--codex-driver sdk``）。每次运行时，RPent 会在当前进程的后台线程中启动本地 Streamable HTTP MCP 服务，Codex 通过该服务调用同一个 toolkit；无需预先启动 ``scripts/codex_proxy/``。
 
 Codex 规划会话不会自动加载仓库的 ``AGENTS.md`` 和 ``.agents/skills/`` 中的开发 skills。工作目录仍为仓库根目录，机器人指南和 memory 仍可通过已有工具读取。
 
@@ -120,9 +120,30 @@ Codex 规划会话不会自动加载仓库的 ``AGENTS.md`` 和 ``.agents/skills
 注意事项：
 
 - 设置 ``CODEX_SERVICE_TIER=fast`` 可向 Codex 后端传入 fast 服务档位，不改变 ``--reasoning-effort``。未设置时 RPent 不覆盖服务档位。
-- ``--model`` 会覆盖 ``CODEX_MODEL``；两者都未设置时使用 Codex SDK 配置的默认模型。
+- ``--model`` 会覆盖 ``CODEX_MODEL``；两者都未设置时使用 Codex 配置的默认模型。
 - ``--planner-timeout-s`` 限制 Codex 运行时间。默认依次读取 ``CODEX_TIMEOUT_S``、``CELL_TIMEOUT_S``，均未设置时为 ``1200`` 秒。
-- 默认情况下，Codex SDK 会复用已有的 Codex 认证。若要接入自定义的 Responses API 兼容端点，请设置 ``CODEX_BASE_URL`` 和 ``CODEX_API_KEY``；这里不读取 ``OPENAI_BASE_URL`` 或 ``OPENAI_API_KEY``。
+- 两种 Codex 驱动均复用已有的 Codex 认证。若要接入自定义的 Responses API 兼容端点，请设置 ``CODEX_BASE_URL`` 和 ``CODEX_API_KEY``；这里不读取 ``OPENAI_BASE_URL`` 或 ``OPENAI_API_KEY``。
+
+非交互 CLI 驱动
+~~~~~~~~~~~~~~~~
+
+使用 ``--codex-driver cli`` 可通过 ``codex exec --json`` 运行单任务评测。请先安装官方 Codex CLI 并登录；``CODEX_BIN`` 指定可执行文件，未设置时使用 ``PATH`` 中的 ``codex``。该驱动使用上文相同的模型和端点环境变量。启动机器人运行环境前，先检查所选驱动：
+
+.. code-block:: bash
+
+   rpent-check-llm --planner codex --codex-driver cli \
+     --model gpt-6.1-sol --timeout-s 90 --json
+
+   rpent --robot libero --planner codex --codex-driver cli \
+     --model gpt-6.1-sol --reasoning-effort low \
+     --planner-timeout-s 1200 \
+     --suite libero_goal_task --task 1 --seed 0
+
+RPent MCP 服务是必需连接，连接失败时 CLI 运行会退出。CLI 的 shell 使用只读沙箱；机器人操作和产物写入由 RPent 工具负责。超时或取消时，RPent 会终止自己启动的 CLI 进程组，等待正在执行的工具停止，再关闭 MCP 服务。临时 ``error`` 事件会保留在日志中，是否失败由 CLI 的最终结果决定。
+
+该驱动支持非交互单任务评测。``--dashboard``、``--interactive`` 和 ``--explore`` 会被拒绝。CLI 事件没有提供逐次模型回复的计数，因此无法执行 ``--max-turns`` 上限；请用 ``--planner-timeout-s`` 限制运行时间。结果中的 ``turns_used=null``，并单独记录 ``cli_turns_completed``。
+
+运行会在 ``codex_<task-tag>.txt`` 旁保存可读记录、原始 ``.stream.jsonl`` 事件、``.last`` 中的最后一条模型消息，以及 ``.stderr`` 中的 CLI 诊断信息。规划器结果包含工具调用和 token 用量。只有成功的 RPent ``finish`` 工具返回值中包含 ``_finish`` 才会设置结束结果；任务是否成功仍由环境原生信号判断。
 
 通过 Codex 使用本地模型
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -169,8 +190,9 @@ RPent 的 ``--model`` 必须与 vLLM 的 ``--served-model-name`` 保持一致。
    rpent-check-llm --planner api --model anthropic:claude-opus-4-8
    rpent-check-llm --planner claude_code
    rpent-check-llm --planner codex --json
+   rpent-check-llm --planner codex --codex-driver cli --json
 
-成功时退出码为 ``0``，任何失败为 ``1``，并将失败归类为 ``missing_config``、``unsupported_provider``、``missing_api_key``、 ``auth_failed``、``network_error``、``provider_error``、``sdk_error`` 之一。脚本与 CI 建议使用 ``--json``。``--base-url`` 覆盖后端端点， ``--timeout-s`` 覆盖诊断超时（``api`` 为 30 秒，两个 SDK 后端为 90 秒；运行时的 ``1200`` 秒默认值不会被复用）。
+成功时退出码为 ``0``，任何失败为 ``1``，并将失败归类为 ``missing_config``、``unsupported_provider``、``missing_api_key``、``invalid_model``、``auth_failed``、``network_error``、``provider_error``、``sdk_error`` 之一。脚本与 CI 建议使用 ``--json``。``--base-url`` 仅覆盖 ``api`` 的端点；Claude Code 和 Codex 读取各自的端点环境变量。``--timeout-s`` 覆盖诊断超时（``api`` 为 30 秒，Claude Code 和两种 Codex 驱动均为 90 秒；运行时的 ``1200`` 秒默认值不会被复用）。
 
 使用 Dashboard 时，也请先在终端运行上述检查，并使用准备运行任务的规划器与模型配置。Dashboard 从命令行接收配置，打开后直接显示运行监控页面。启动方法见 :doc:`dashboard`。
 
@@ -189,10 +211,11 @@ RPent 的 ``--model`` 必须与 vLLM 的 ``--served-model-name`` 保持一致。
 ``--max-turns N`` 设置规划轮数上限，默认 ``100``。一轮不是一次机器人动作：模型的一次回复可以要求调用多个工具。各后端的计数规则不同：
 
 - **API：** 整段对话中，每次模型请求算一轮，包含重试和用户后续输入产生的请求。Pydantic AI 负责执行这个上限，RPent 将请求次数记为 ``turns_used``。达到上限时正常停止，不记为规划器错误，也不代表任务成功。探索模式仍可继续下一会话，并在满足其他条件时合并记忆。
-- **Codex：** 模型每回复一次算一轮。只有推理或工具调用、没有文字的回复也计数；同一次回复中的多个工具调用不会分别计数。RPent 负责执行这个上限。
+- **Codex SDK：** 模型每回复一次算一轮。只有推理或工具调用、没有文字的回复也计数；同一次回复中的多个工具调用不会分别计数。RPent 负责执行这个上限。
+- **Codex CLI：** 无法获取逐次模型回复的计数，也不执行 ``--max-turns`` 上限；请使用上文的运行时间限制。
 - **Claude Code：** 一轮是“模型请求工具 → 工具执行 → 结果返回模型”。最后不调用工具的文字答复不占用这一预算。RPent 把上限交给 Claude Code 执行，达到上限时返回 ``error_max_turns``。
 
-例如，没有重试时，模型先在一次回复中要求读取两个文件，拿到结果后再给出文字总结：API 发送两次请求，Codex 计两次回复，Claude 消耗一轮工具预算。三者都报告 ``turns_used=2``；Claude 报告的回复次数与工具预算的计数不同。
+例如，没有重试时，模型先在一次回复中要求读取两个文件，拿到结果后再给出文字总结：API 发送两次请求，Codex SDK 计两次回复，Claude 消耗一轮工具预算。三者都报告 ``turns_used=2``；Claude 报告的回复次数与工具预算的计数不同。
 
 Claude 交互模式下，每次新增用户输入都会获得新的轮数预算，``turns_used`` 则继续累计。详见 `Claude 的轮数限制说明 <https://code.claude.com/docs/en/agent-sdk/agent-loop#turns-and-budget>`_。
 

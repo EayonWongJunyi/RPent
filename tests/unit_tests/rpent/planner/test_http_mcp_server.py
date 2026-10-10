@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -142,3 +143,59 @@ async def _fire_concurrent(url: str) -> int:
                     ):
                         rejected += 1
     return rejected
+
+
+def test_shutdown_cancels_active_tool_and_rejects_queued_calls(tmp_path: Path) -> None:
+    init_output_dir(tmp_path / "log")
+    toolkit = FakeToolkit(tmp_path)
+    started = threading.Event()
+    stopped = threading.Event()
+    queued_executions = []
+
+    @tool(readonly=True)
+    def blocked() -> ToolResult:
+        """Wait for a safe cancellation boundary."""
+        started.set()
+        try:
+            while True:
+                toolkit.raise_if_cancelled()
+                time.sleep(0.01)
+        finally:
+            stopped.set()
+
+    @tool(readonly=True)
+    def queued() -> ToolResult:
+        """Record whether a queued call ran."""
+        queued_executions.append(True)
+        return ToolResult(data={"ran": True})
+
+    toolkit.add_tool(blocked)
+    toolkit.add_tool(queued)
+    server = HttpMcpServer(toolkit)
+
+    async def run():
+        async with httpx.AsyncClient(trust_env=False) as http_client:
+            async with streamable_http_client(server.url, http_client=http_client) as (
+                read,
+                write,
+                _,
+            ):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    active = asyncio.create_task(session.call_tool("blocked", {}))
+                    assert await asyncio.to_thread(started.wait, 5)
+                    pending = asyncio.create_task(session.call_tool("queued", {}))
+                    await asyncio.sleep(0.05)
+                    await asyncio.to_thread(server.cancel_active_and_wait)
+                    assert stopped.is_set()
+                    first, second = await asyncio.gather(active, pending)
+                    assert first.isError and second.isError
+                    assert "MCP server is stopping" in second.content[0].text
+
+    try:
+        server.start()
+        asyncio.run(run())
+    finally:
+        server.stop()
+    assert queued_executions == []
+    assert toolkit._active_operation is None

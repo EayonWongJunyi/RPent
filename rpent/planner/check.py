@@ -169,12 +169,14 @@ class LlmCheckRequest:
             optional for ``claude_code`` and ``codex``.
         base_url: Base URL overriding the backend's own env var.
         timeout_s: Wall-clock cap. Defaults per backend when ``None``.
+        codex_driver: Codex transport: ``sdk`` (default) or ``cli``.
     """
 
     planner: str = "api"
     model: str | None = None
     base_url: str | None = None
     timeout_s: int | None = None
+    codex_driver: str = "sdk"
 
     def resolved_timeout_s(self) -> int:
         """Return the effective timeout, applying the per-backend default."""
@@ -268,6 +270,16 @@ def check_llm(request: LlmCheckRequest) -> LlmCheckResult:
                 f"unknown planner {planner!r}; expected one of "
                 f"{', '.join(CHECK_PLANNERS)}"
             ),
+        )
+
+    if request.codex_driver not in {"sdk", "cli"} or (
+        request.codex_driver == "cli" and planner != "codex"
+    ):
+        return LlmCheckResult(
+            ok=False,
+            status=STATUS_MISSING_CONFIG,
+            planner=planner,
+            detail="codex_driver must be sdk or cli; cli requires the codex planner",
         )
 
     if _running_loop():
@@ -777,7 +789,7 @@ def _classify_claude_outcome(outcome: _ClaudeProbeOutcome) -> str | None:
 
 
 def _check_codex(request: LlmCheckRequest) -> LlmCheckResult:
-    """Probe the Codex SDK with one turn and no MCP server attached."""
+    """Probe the selected Codex driver without an RPent MCP server."""
     model = (request.model or "").strip() or os.environ.get("CODEX_MODEL") or None
     key_present = bool(os.environ.get(_CODEX_KEY_ENV))
     base_url = os.environ.get(_CODEX_BASE_URL_ENV) or None
@@ -792,11 +804,15 @@ def _check_codex(request: LlmCheckRequest) -> LlmCheckResult:
             credential_present=key_present,
             base_url=base_url,
             base_url_env=_CODEX_BASE_URL_ENV,
+            extra={"codex_driver": request.codex_driver},
             **kwargs,
         )
 
     try:
-        from rpent.planner.codex import build_probe_config, run_probe_turn
+        if request.codex_driver == "cli":
+            from rpent.planner.codex_cli import run_cli_probe
+        else:
+            from rpent.planner.codex import build_probe_config, run_probe_turn
     except ImportError as exc:
         return _result(STATUS_SDK_ERROR, detail=_describe(exc))
 
@@ -811,21 +827,27 @@ def _check_codex(request: LlmCheckRequest) -> LlmCheckResult:
     timeout_s = _sdk_probe_budget(request, cli_login_only=not key_present)
     started = time.monotonic()
     try:
-        # Turn consumption and timeout/cleanup live in codex.py, next to the
-        # planner's own SDK usage, so both share one set of API assumptions.
-        reply = run_probe_turn(
-            build_probe_config(base_url),
-            prompt=PROBE_PROMPT,
-            model=model,
-            timeout_s=timeout_s,
-        )
+        # Each driver shares transport and cleanup with its task planner.
+        if request.codex_driver == "cli":
+            reply = run_cli_probe(
+                prompt=PROBE_PROMPT,
+                model=model,
+                timeout_s=timeout_s,
+            )
+        else:
+            reply = run_probe_turn(
+                build_probe_config(base_url),
+                prompt=PROBE_PROMPT,
+                model=model,
+                timeout_s=timeout_s,
+            )
     except (asyncio.TimeoutError, TimeoutError):
         return _result(
             STATUS_NETWORK_ERROR,
             detail=(
-                f"the Codex SDK did not respond within {timeout_s}s. "
-                "The provider, the network, or the local CLI the SDK "
-                "runs could each cause this."
+                f"the Codex {request.codex_driver.upper()} did not respond within {timeout_s}s. "
+                "The provider, the network, or the local Codex process "
+                "could each cause this."
             ),
             latency_s=round(time.monotonic() - started, 3),
         )
@@ -840,7 +862,7 @@ def _check_codex(request: LlmCheckRequest) -> LlmCheckResult:
     if not reply.strip():
         return _result(
             STATUS_PROVIDER_ERROR,
-            detail="the Codex SDK returned no assistant text.",
+            detail=f"the Codex {request.codex_driver.upper()} returned no assistant text.",
             latency_s=latency_s,
         )
     return _result(STATUS_OK, reply=reply.strip(), latency_s=latency_s)

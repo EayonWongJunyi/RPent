@@ -59,6 +59,12 @@ def _parser() -> argparse.ArgumentParser:
         help="LLM backend to check: api | claude_code | codex.",
     )
     parser.add_argument(
+        "--codex-driver",
+        choices=["sdk", "cli"],
+        default="sdk",
+        help="Codex driver to check (default: sdk). cli uses codex exec.",
+    )
+    parser.add_argument(
         "--model",
         default=None,
         help="Model id. For the 'api' planner, prefix the provider "
@@ -144,6 +150,8 @@ def _render(result: LlmCheckResult) -> str:
         The report text, without a trailing newline.
     """
     rows: list[tuple[str, str]] = [("planner", result.planner)]
+    if driver := result.extra.get("codex_driver"):
+        rows.append(("codex driver", driver))
     if result.model:
         rows.append(("model", result.model))
     if result.credential_env:
@@ -178,6 +186,8 @@ def main() -> int:
     """Run one connectivity check and report it. Returns 0 on success."""
     parser = _parser()
     args = parser.parse_args()
+    if args.codex_driver == "cli" and args.planner != "codex":
+        parser.error("--codex-driver cli requires --planner codex")
     # Mirrors the run CLI: the flag reaches the api model only, so accepting
     # it for the SDK backends would test an endpoint the run cannot use.
     if args.base_url and args.planner in BASE_URL_ENV_BY_PLANNER:
@@ -189,6 +199,7 @@ def main() -> int:
     result = check_llm(
         LlmCheckRequest(
             planner=args.planner,
+            codex_driver=args.codex_driver,
             model=args.model,
             base_url=args.base_url,
             timeout_s=args.timeout_s,
